@@ -16,15 +16,19 @@ class AuthController extends Controller
             'password' => ['required'],
         ]);
 
-        if (!Auth::attempt($credentials, $request->boolean('remember'))) {
+        if (!Auth::attempt($credentials)) {
             return response()->json(['message' => 'Invalid credentials'], 401);
         }
 
-        $request->session()->regenerate();
         $user = Auth::user();
+        
+        // Untuk web API, juga menggunakan token untuk konsistensi
+        $token = $user->createToken('web-token')->plainTextToken;
 
         return response()->json([
             'user' => $user,
+            'token' => $token,
+            'token_type' => 'Bearer',
             'message' => 'Login successful'
         ]);
     }
@@ -86,16 +90,8 @@ class AuthController extends Controller
 
     // Logout
     public function logout(Request $request) {
-        if ($request->is('api/web/*')) {
-            // Web logout - hapus session
-            Auth::logout();
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
-            return response()->json(['message' => 'Logged out']);
-        } else {
-            // Mobile logout - hapus token
-            $request->user()->currentAccessToken()->delete();
-            return response()->json(['message' => 'Token revoked']);
-        }
+        // Karena kedua API (web & mobile) menggunakan token, logout sama saja
+        $request->user()->currentAccessToken()->delete();
+        return response()->json(['message' => 'Token revoked successfully']);
     }
 }

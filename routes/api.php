@@ -13,7 +13,7 @@ RateLimiter::for('api', function ($request) {
 });
 
 // Routes untuk Web API (stateful)
-Route::prefix('web')->middleware('web')->group(function () {
+Route::prefix('web')->group(function () {
     Route::post('/login', [AuthController::class, 'webLogin']);
     Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
     

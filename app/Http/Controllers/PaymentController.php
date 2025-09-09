@@ -29,7 +29,11 @@ class PaymentController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'payment_id' => 'required|exists:payments,id'
+            'payment_id' => [
+                'required',
+                'integer',
+                'exists:payments,id,student_id,' . auth()->id()
+            ]
         ]);
 
         $payment = Payment::where('id', $request->payment_id)
