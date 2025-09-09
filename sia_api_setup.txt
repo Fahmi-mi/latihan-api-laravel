@@ -255,19 +255,11 @@ public function profile(Request $request) {
     return response()->json(['user' => $request->user()]);
 }
 
-// Logout
+// Logout (Sama untuk Web & Mobile - menggunakan token)
 public function logout(Request $request) {
-    if ($request->is('api/web/*')) {
-        // Web logout - hapus session
-        Auth::logout();
-        $request->session()->invalidate();
-        $request->session()->regenerateToken();
-        return response()->json(['message' => 'Logged out']);
-    } else {
-        // Mobile logout - hapus token
-        $request->user()->currentAccessToken()->delete();
-        return response()->json(['message' => 'Token revoked']);
-    }
+    // Karena kedua API (web & mobile) menggunakan token, logout sama saja
+    $request->user()->currentAccessToken()->delete();
+    return response()->json(['message' => 'Token revoked successfully']);
 }
 
  7. Environment Variables (.env)
@@ -436,6 +428,7 @@ Tambahkan di bootstrap/app.php:
     Endpoint: /api/mobile/payments
     Headers:
     - Content-Type: application/json
+    - Accept: application/json
     - Authorization: Bearer {token_dari_login}
     Body (JSON):
     {
@@ -451,6 +444,8 @@ Tambahkan di bootstrap/app.php:
             "paid_at": "2025-09-09T12:00:00.000000Z"
         }
     }
+    
+    CATATAN: Jika dapat response HTML Laravel, tambahkan header Accept: application/json
 
  8. Mobile Logout
     Method: POST
@@ -461,7 +456,7 @@ Tambahkan di bootstrap/app.php:
     Body: (empty)
     Expected Response: 200 OK
     {
-        "message": "Token revoked"
+        "message": "Token revoked successfully"
     }
 
  === WEB API (Base URL: http://localhost:8000/api/web) ===
@@ -469,7 +464,9 @@ Tambahkan di bootstrap/app.php:
  1. Web Login
     Method: POST
     Endpoint: /api/web/login
-    Headers: Content-Type: application/json
+    Headers: 
+    - Content-Type: application/json
+    - Accept: application/json
     Body (JSON):
     {
         "email": "john@example.com",
@@ -478,16 +475,19 @@ Tambahkan di bootstrap/app.php:
     Expected Response: 200 OK
     {
         "user": { ... },
+        "token": "3|xxxxx...",
+        "token_type": "Bearer",
         "message": "Login successful"
     }
-    Note: Simpan cookies dari response untuk request selanjutnya
+    Note: Gunakan token untuk request selanjutnya (sama seperti Mobile API)
 
  2. Register for Course (Web)
     Method: POST
     Endpoint: /api/web/registrations
     Headers: 
     - Content-Type: application/json
-    - Cookie: {cookies_dari_login}
+    - Accept: application/json
+    - Authorization: Bearer {token_dari_login}
     Body (JSON):
     {
         "course_id": 2,
@@ -499,7 +499,8 @@ Tambahkan di bootstrap/app.php:
     Endpoint: /api/web/payments
     Headers:
     - Content-Type: application/json
-    - Cookie: {cookies_dari_login}
+    - Accept: application/json
+    - Authorization: Bearer {token_dari_login}
     Body: (empty)
 
  4. Pay Invoice (Web)
@@ -507,7 +508,8 @@ Tambahkan di bootstrap/app.php:
     Endpoint: /api/web/payments
     Headers:
     - Content-Type: application/json
-    - Cookie: {cookies_dari_login}
+    - Accept: application/json
+    - Authorization: Bearer {token_dari_login}
     Body (JSON):
     {
         "payment_id": 2
@@ -518,8 +520,13 @@ Tambahkan di bootstrap/app.php:
     Endpoint: /api/web/logout
     Headers:
     - Content-Type: application/json
-    - Cookie: {cookies_dari_login}
+    - Accept: application/json
+    - Authorization: Bearer {token_dari_login}
     Body: (empty)
+    Expected Response: 200 OK
+    {
+        "message": "Token revoked successfully"
+    }
 
  === DATA USER UNTUK TESTING ===
  Email: john@example.com
@@ -533,9 +540,38 @@ Tambahkan di bootstrap/app.php:
 
  === CATATAN TESTING ===
  - Untuk Mobile API: Gunakan Authorization Header dengan Bearer token
- - Untuk Web API: Gunakan Cookies dari login response
+ - Untuk Web API: Gunakan Authorization Header dengan Bearer token (sama seperti Mobile)
+ - Selalu tambahkan header Accept: application/json untuk response JSON
  - Course ID yang aktif: 1, 2, 3, 4 (Course ID 5 tidak aktif)
  - Pastikan server running di http://localhost:8000
+ 
+ === PERBAIKAN YANG DILAKUKAN ===
+ - Menghapus middleware 'web' dari API routes untuk mengatasi error 419 Page Expired
+ - Web API sekarang menggunakan Bearer token (bukan session) untuk konsistensi
+ - Kedua API (Web & Mobile) menggunakan authentication method yang sama
+ - Memperbaiki PaymentController validation untuk memastikan payment milik user yang login
+ - Menambah PaymentSeeder untuk membuat data payment testing
+ - Memperbaiki logout function untuk menggunakan token revocation (bukan session logout)
+
+ === TROUBLESHOOTING PAYMENT ERROR ===
+ Jika mendapat error "The selected payment id is invalid":
+ 1. Pastikan user sudah login dan memiliki Bearer token
+ 2. Cek payment ID dengan GET /api/web/payments atau /api/mobile/payments dulu
+ 3. Gunakan payment_id yang muncul di response GET payments
+ 4. Payment hanya bisa dibayar oleh user yang memilikinya (student_id harus sama)
+
+ === DATA PAYMENT UNTUK TESTING ===
+ Login sebagai john@example.com (ID: 2):
+ - Payment ID 2: Amount 2500000, Status unpaid ✅ Bisa dibayar
+ - Payment ID 4: Amount 500000, Status unpaid ✅ Bisa dibayar
+
+ Login sebagai jane@example.com (ID: 3):
+ - Payment ID 3: Amount 3000000, Status unpaid ✅ Bisa dibayar
+
+ LANGKAH TESTING:
+ 1. Login sebagai john@example.com → dapat token
+ 2. GET /api/web/payments → lihat payment yang tersedia
+ 3. POST /api/web/payments dengan payment_id: 2 atau 4
 
 ---
 Checklist alur:
