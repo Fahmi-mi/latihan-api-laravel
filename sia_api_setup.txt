@@ -1,0 +1,555 @@
+ Panduan Setup API SIA dengan Laravel 12, Sanctum, dan Postman
+
+ 1. Setup Sanctum
+- Laravel 12 sudah include Sanctum secara default (cek di composer.json).
+- Kalau belum ada, install manual:
+  composer require laravel/sanctum
+
+- Publish & migrate Sanctum:
+  php artisan vendor:publish --provider="Laravel\Sanctum\SanctumServiceProvider"
+  php artisan migrate
+
+- Tambahkan trait di User model:
+  use Laravel\Sanctum\HasApiTokens;
+
+  class User extends Authenticatable {
+      use HasApiTokens, HasFactory, Notifiable;
+  }
+
+- Konfigurasi CORS untuk mobile & web API:
+  Laravel 12 sudah include CORS bawaan, tidak perlu install package tambahan.
+  
+- Buat file config/cors.php dengan isi:
+  <?php
+  return [
+      'paths' => ['api/*', 'sanctum/csrf-cookie'],
+      'allowed_methods' => ['*'],
+      'allowed_origins' => ['*'], // Untuk development, production harus spesifik
+      'allowed_origins_patterns' => [],
+      'allowed_headers' => ['*'],
+      'exposed_headers' => [],
+      'max_age' => 0,
+      'supports_credentials' => true,
+  ];
+  
+- Update bootstrap/app.php untuk aktifkan CORS middleware:
+  ->withMiddleware(function (Middleware $middleware): void {
+      $middleware->api(prepend: [
+          \Illuminate\Http\Middleware\HandleCors::class,
+      ]);
+  })
+
+- Konfigurasi Sanctum untuk Web & Mobile di config/sanctum.php:
+  'stateful' => explode(',', env('SANCTUM_STATEFUL_DOMAINS', sprintf(
+      '%s%s%s',
+      'localhost,localhost:3000,127.0.0.1,127.0.0.1:8000,::1',
+      env('APP_URL') ? ','.parse_url(env('APP_URL'), PHP_URL_HOST) : '',
+      env('FRONTEND_URL') ? ','.parse_url(env('FRONTEND_URL'), PHP_URL_HOST) : ''
+  ))),
+
+- Cek `bootstrap/app.php` middleware API sudah ada (Laravel 12):
+  ->withMiddleware(function (Middleware $middleware) {
+      $middleware->api(prepend: [
+          \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
+      ]);
+  })
+
+ 2. Buat Migration & Model
+ Course (harus dibuat dulu)
+- Buat model, migration, controller:
+  php artisan make:model Course -mcr
+
+- Migration (database/migrations/...create_courses_table.php):
+  Schema::create('courses', function (Blueprint $table) {
+      $table->id();
+      $table->string('name');
+      $table->string('code');
+      $table->integer('credits');
+      $table->integer('tuition_fee');
+      $table->text('description')->nullable();
+      $table->boolean('is_active')->default(true);
+      $table->timestamps();
+  });
+
+ Registration
+- Buat model, migration, controller:
+  php artisan make:model Registration -mcr
+
+- Migration (database/migrations/...create_registrations_table.php):
+  Schema::create('registrations', function (Blueprint $table) {
+      $table->id();
+      $table->foreignId('student_id')->constrained('users')->onDelete('cascade');
+      $table->foreignId('course_id')->constrained('courses');
+      $table->string('semester');
+      $table->string('status')->default('registered');
+      $table->timestamps();
+  });
+
+ Payment
+- Buat model, migration, controller:
+  php artisan make:model Payment -mcr
+
+- Migration (database/migrations/...create_payments_table.php):
+  Schema::create('payments', function (Blueprint $table) {
+      $table->id();
+      $table->foreignId('student_id')->constrained('users')->onDelete('cascade');
+      $table->foreignId('registration_id')->nullable()->constrained('registrations')->onDelete('cascade');
+      $table->integer('amount');
+      $table->string('status')->default('unpaid');
+      $table->timestamp('paid_at')->nullable();
+      $table->timestamps();
+  });
+
+ 3. Controller
+ RegistrationController
+public function store(Request $request) {
+    $request->validate([
+        'course_id' => 'required|exists:courses,id',
+        'semester' => 'required|string'
+    ]);
+
+    $registration = Registration::create([
+        'student_id' => auth()->id(),
+        'course_id' => $request->course_id,
+        'semester' => $request->semester,
+        'status' => 'registered'
+    ]);
+
+    return response()->json([
+        'message' => 'Registration successful',
+        'data' => $registration
+    ]);
+}
+
+ PaymentController
+public function index() {
+    return Payment::where('student_id', auth()->id())->get();
+}
+
+public function store(Request $request) {
+    $request->validate([
+        'payment_id' => 'required|exists:payments,id'
+    ]);
+
+    $payment = Payment::where('id', $request->payment_id)
+        ->where('student_id', auth()->id())
+        ->firstOrFail();
+
+    $payment->update([
+        'status' => 'paid',
+        'paid_at' => now()
+    ]);
+
+    return response()->json([
+        'message' => 'Payment successful',
+        'data' => $payment
+    ]);
+}
+
+ 4. Routes (routes/api.php)
+use App\Http\Controllers\AuthController;
+use App\Http\Controllers\RegistrationController;
+use App\Http\Controllers\PaymentController;
+
+// Routes untuk Web API (stateful)
+Route::prefix('web')->middleware('web')->group(function () {
+    Route::post('/login', [AuthController::class, 'webLogin']);
+    Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
+    
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::post('/registrations', [RegistrationController::class, 'store']);
+        Route::get('/payments', [PaymentController::class, 'index']);
+        Route::post('/payments', [PaymentController::class, 'store']);
+    });
+});
+
+// Routes untuk Mobile API (stateless)
+Route::prefix('mobile')->middleware(['throttle:api'])->group(function () {
+    Route::post('/login', [AuthController::class, 'mobileLogin'])->middleware('throttle:5,1');
+    Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:3,1');
+    Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
+    
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::get('/profile', [AuthController::class, 'profile']);
+        Route::post('/registrations', [RegistrationController::class, 'store']);
+        Route::get('/payments', [PaymentController::class, 'index']);
+        Route::post('/payments', [PaymentController::class, 'store']);
+        Route::get('/courses', [CourseController::class, 'index']);
+    });
+});
+
+ 5. AuthController (Web & Mobile login)
+
+// Web Login (stateful - menggunakan session)
+public function webLogin(Request $request) {
+    $credentials = $request->validate([
+        'email' => ['required', 'email'],
+        'password' => ['required'],
+    ]);
+
+    if (!Auth::attempt($credentials, $request->boolean('remember'))) {
+        return response()->json(['message' => 'Invalid credentials'], 401);
+    }
+
+    $request->session()->regenerate();
+    $user = Auth::user();
+
+    return response()->json([
+        'user' => $user,
+        'message' => 'Login successful'
+    ]);
+}
+
+// Mobile Login (stateless - menggunakan token)
+public function mobileLogin(Request $request) {
+    $credentials = $request->validate([
+        'email' => ['required', 'email'],
+        'password' => ['required'],
+        'device_name' => ['required', 'string']
+    ]);
+
+    if (!Auth::attempt(['email' => $credentials['email'], 'password' => $credentials['password']])) {
+        return response()->json(['message' => 'Invalid credentials'], 401);
+    }
+
+    $user = Auth::user();
+    
+    // Hapus token lama untuk device yang sama (optional)
+    $user->tokens()->where('name', $credentials['device_name'])->delete();
+    
+    $token = $user->createToken($credentials['device_name'])->plainTextToken;
+
+    return response()->json([
+        'user' => $user,
+        'token' => $token,
+        'token_type' => 'Bearer'
+    ]);
+}
+
+// Register untuk mobile
+public function register(Request $request) {
+    $validated = $request->validate([
+        'name' => ['required', 'string', 'max:255'],
+        'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
+        'password' => ['required', 'string', 'min:8', 'confirmed'],
+        'device_name' => ['required', 'string']
+    ]);
+
+    $user = User::create([
+        'name' => $validated['name'],
+        'email' => $validated['email'],
+        'password' => Hash::make($validated['password']),
+    ]);
+
+    $token = $user->createToken($validated['device_name'])->plainTextToken;
+
+    return response()->json([
+        'user' => $user,
+        'token' => $token,
+        'token_type' => 'Bearer'
+    ], 201);
+}
+
+// Profile
+public function profile(Request $request) {
+    return response()->json(['user' => $request->user()]);
+}
+
+// Logout
+public function logout(Request $request) {
+    if ($request->is('api/web/*')) {
+        // Web logout - hapus session
+        Auth::logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+        return response()->json(['message' => 'Logged out']);
+    } else {
+        // Mobile logout - hapus token
+        $request->user()->currentAccessToken()->delete();
+        return response()->json(['message' => 'Token revoked']);
+    }
+}
+
+ 7. Environment Variables (.env)
+Tambahkan konfigurasi berikut:
+
+# Sanctum
+SANCTUM_STATEFUL_DOMAINS=localhost,127.0.0.1,localhost:3000
+FRONTEND_URL=http://localhost:3000
+
+# Session untuk web
+SESSION_DRIVER=database
+SESSION_LIFETIME=120
+
+# API Rate Limiting
+API_RATE_LIMIT=60
+
+ 8. Middleware Custom (optional)
+Buat middleware untuk membedakan request web/mobile:
+
+php artisan make:middleware ApiVersionMiddleware
+
+public function handle($request, Closure $next, $version = 'v1') {
+    $request->attributes->set('api_version', $version);
+    return $next($request);
+}
+
+ 9. Error Handling
+Tambahkan di bootstrap/app.php:
+
+->withExceptions(function (Exceptions $exceptions) {
+    $exceptions->render(function (AuthenticationException $e, Request $request) {
+        if ($request->is('api/mobile/*')) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+        
+        if ($request->is('api/web/*')) {
+            return response()->json(['message' => 'Please login first.'], 401);
+        }
+        
+        return response()->json(['message' => 'Unauthorized.'], 401);
+    });
+})
+
+ 10. Testing dengan Postman
+ 
+ DAFTAR ENDPOINT LENGKAP UNTUK TESTING:
+
+ === MOBILE API (Base URL: http://localhost:8000/api/mobile) ===
+
+ 1. Register User
+    Method: POST
+    Endpoint: /api/mobile/register
+    Headers: Content-Type: application/json
+    Body (JSON):
+    {
+        "name": "Test User",
+        "email": "testuser@example.com",
+        "password": "password123",
+        "password_confirmation": "password123",
+        "device_name": "iPhone 15"
+    }
+    Expected Response: 201 Created
+    {
+        "user": { ... },
+        "token": "1|xxxxx...",
+        "token_type": "Bearer"
+    }
+
+ 2. Mobile Login
+    Method: POST
+    Endpoint: /api/mobile/login
+    Headers: Content-Type: application/json
+    Body (JSON):
+    {
+        "email": "john@example.com",
+        "password": "password123", 
+        "device_name": "iPhone 15"
+    }
+    Expected Response: 200 OK
+    {
+        "user": { ... },
+        "token": "2|xxxxx...",
+        "token_type": "Bearer"
+    }
+
+ 3. Get User Profile
+    Method: GET
+    Endpoint: /api/mobile/profile
+    Headers: 
+    - Content-Type: application/json
+    - Authorization: Bearer {token_dari_login}
+    Body: (empty)
+    Expected Response: 200 OK
+    {
+        "user": {
+            "id": 1,
+            "name": "John Doe",
+            "email": "john@example.com"
+        }
+    }
+
+ 4. Get Active Courses
+    Method: GET
+    Endpoint: /api/mobile/courses
+    Headers:
+    - Content-Type: application/json
+    - Authorization: Bearer {token_dari_login}
+    Body: (empty)
+    Expected Response: 200 OK
+    [
+        {
+            "id": 1,
+            "name": "Pemrograman Web",
+            "code": "PWB001",
+            "credits": 3,
+            "tuition_fee": 2500000,
+            "description": "...",
+            "is_active": true
+        }
+    ]
+
+ 5. Register for Course
+    Method: POST
+    Endpoint: /api/mobile/registrations
+    Headers:
+    - Content-Type: application/json
+    - Authorization: Bearer {token_dari_login}
+    Body (JSON):
+    {
+        "course_id": 1,
+        "semester": "2025-Ganjil"
+    }
+    Expected Response: 200 OK
+    {
+        "message": "Registration successful",
+        "data": {
+            "id": 1,
+            "student_id": 2,
+            "course_id": 1,
+            "semester": "2025-Ganjil",
+            "status": "registered"
+        }
+    }
+
+ 6. Get Payment List
+    Method: GET
+    Endpoint: /api/mobile/payments
+    Headers:
+    - Content-Type: application/json
+    - Authorization: Bearer {token_dari_login}
+    Body: (empty)
+    Expected Response: 200 OK
+    [
+        {
+            "id": 1,
+            "student_id": 2,
+            "registration_id": 1,
+            "amount": 2500000,
+            "status": "unpaid",
+            "paid_at": null
+        }
+    ]
+
+ 7. Pay Invoice
+    Method: POST
+    Endpoint: /api/mobile/payments
+    Headers:
+    - Content-Type: application/json
+    - Authorization: Bearer {token_dari_login}
+    Body (JSON):
+    {
+        "payment_id": 1
+    }
+    Expected Response: 200 OK
+    {
+        "message": "Payment successful",
+        "data": {
+            "id": 1,
+            "student_id": 2,
+            "status": "paid",
+            "paid_at": "2025-09-09T12:00:00.000000Z"
+        }
+    }
+
+ 8. Mobile Logout
+    Method: POST
+    Endpoint: /api/mobile/logout
+    Headers:
+    - Content-Type: application/json
+    - Authorization: Bearer {token_dari_login}
+    Body: (empty)
+    Expected Response: 200 OK
+    {
+        "message": "Token revoked"
+    }
+
+ === WEB API (Base URL: http://localhost:8000/api/web) ===
+
+ 1. Web Login
+    Method: POST
+    Endpoint: /api/web/login
+    Headers: Content-Type: application/json
+    Body (JSON):
+    {
+        "email": "john@example.com",
+        "password": "password123"
+    }
+    Expected Response: 200 OK
+    {
+        "user": { ... },
+        "message": "Login successful"
+    }
+    Note: Simpan cookies dari response untuk request selanjutnya
+
+ 2. Register for Course (Web)
+    Method: POST
+    Endpoint: /api/web/registrations
+    Headers: 
+    - Content-Type: application/json
+    - Cookie: {cookies_dari_login}
+    Body (JSON):
+    {
+        "course_id": 2,
+        "semester": "2025-Ganjil"
+    }
+
+ 3. Get Payment List (Web)
+    Method: GET
+    Endpoint: /api/web/payments
+    Headers:
+    - Content-Type: application/json
+    - Cookie: {cookies_dari_login}
+    Body: (empty)
+
+ 4. Pay Invoice (Web)
+    Method: POST
+    Endpoint: /api/web/payments
+    Headers:
+    - Content-Type: application/json
+    - Cookie: {cookies_dari_login}
+    Body (JSON):
+    {
+        "payment_id": 2
+    }
+
+ 5. Web Logout
+    Method: POST
+    Endpoint: /api/web/logout
+    Headers:
+    - Content-Type: application/json
+    - Cookie: {cookies_dari_login}
+    Body: (empty)
+
+ === DATA USER UNTUK TESTING ===
+ Email: john@example.com
+ Password: password123
+
+ Email: jane@example.com
+ Password: password123
+
+ Email: admin@sia.com
+ Password: password123
+
+ === CATATAN TESTING ===
+ - Untuk Mobile API: Gunakan Authorization Header dengan Bearer token
+ - Untuk Web API: Gunakan Cookies dari login response
+ - Course ID yang aktif: 1, 2, 3, 4 (Course ID 5 tidak aktif)
+ - Pastikan server running di http://localhost:8000
+
+---
+Checklist alur:
+1. Setup environment (.env)
+2. Publish & migrate Sanctum: php artisan sanctum:install
+3. Jalankan migration: php artisan migrate
+4. Buat seeder untuk courses & users: php artisan make:seeder CourseSeeder
+5. Jalankan seeder: php artisan db:seed
+6. Test Mobile API:
+   - Register user baru
+   - Login (dapat token)
+   - Test semua endpoints dengan Bearer token
+7. Test Web API:
+   - Login (dapat session cookie)
+   - Test semua endpoints dengan cookie auth
+8. Test rate limiting & error handling
+9. Deploy & update CORS untuk production
